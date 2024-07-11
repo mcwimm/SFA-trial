@@ -1,4 +1,9 @@
+###############################################################################
+# HELPER FUNCTIONS to read and concatenate raw data into data frames
+# Input data: csv files from the SFA submitted by trial participants
 # NOTE: For this file to work, unzip folders in data/raw/
+###############################################################################
+
 
 path_to_raw = "data/raw"
 

@@ -1,0 +1,11 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.Rproj
+
+*/analysis_files/*
+/figs
+/R_notonline
+*.csv
+*.txt

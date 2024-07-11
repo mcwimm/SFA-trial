@@ -1,0 +1,1156 @@
+---
+title: "Results user trial: Sap Flow Analyzer (SFA) usability and reproducibility"
+author: "Marie-Christin Wimmler"
+editor: visual
+format: 
+  html:
+    toc: true
+    number-sections: true
+    code-fold: true
+knitr:
+  opts_chunk:
+    out.width: "100%"
+execute: 
+  cache: false
+  warning: false
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source("libs.R")
+source("helpers.R")
+source("sap_flow_functions.R")
+
+theme_set(theme_linedraw() + 
+              theme(panel.grid = element_line(colour = "grey")))
+ggplot <- function(...) ggplot2::ggplot(...) +
+    scale_color_brewer(palette="Dark2") +
+    scale_fill_brewer(palette="Dark2")
+
+options(dplyr.summarise.inform = FALSE)
+```
+
+# Data
+
+- raw participant data (csv files produced with SFA) are transformed to rda files using `R_scripts/markeRda.R`
+
+```{r}
+labels <- list("dTsym.dTas" = expression(paste("dTsym \u00b7 ", dTas^-1)),
+               "dTas" = "dTas",
+               "dTsa" = "dTsa",
+               "dTSym" = "dTSym",
+               "dT" = "\U0394 T (\u00B0 C)",
+               "T" = paste("Temperature (\u00B0", "C)", sep = ""),
+               "doy" = "Day of year",
+               "dTime" = "Time (h)",
+               "datetime" = "",
+               "date" = "Date",
+               "position" = "Thermometer position",
+               "SFI" = "Sap Flow Index (\u00B0 C)",
+               "SF" = expression(paste("Sap Flow Rate (kg \u00b7 ",
+                                       h^-1, ")")),
+               "SFS" = expression(paste("Sap Flow per Section (g \u00b7 ",
+                                        cm^-1, "\u00b7", h^-1, ")")),
+               "SFDsw" = expression(paste("Sapwood-related Sap Flow Density (g \u00b7",
+                                          cm^-2, "\u00b7 ", h^-1, ")")),
+               "TWU" = expression(paste("Tree Water Use (kg \u00b7 ",
+                                       d^-1, ")")))
+```
+
+
+```{r loadSpruce}
+load(file = "../data/processed/files_spruce.rda") # files_spruce
+load(file = "../data/processed/K_spruce.rda") # k_spruce
+load(file = "../data/processed/twu_spruce.rda") # twu_spruce
+load(file = "../data/processed/sensor_spruce.rda") # sensor_spruce
+load(file = "../data/processed/sapflow_spruce.rda") # sapflow_spruce
+sapwood_spruce = fread("../data/raw/spruce_sapwood.txt")
+```
+
+```{r loadHornbeam}
+load(file = "../data/processed/files_hornbeam.rda") # files_hornbeam
+load(file = "../data/processed/K_hornbeam.rda") # k_hornbeam
+load(file = "../data/processed/twu_hornbeam.rda") # twu_hornbeam
+load(file = "../data/processed/sensor_hornbeam.rda") # sensor_hornbeam
+load(file = "../data/processed/sapflow_hornbeam.rda") # sapflow_hornbeam
+sapwood_hornbeam = fread("../data/raw/hornbeam_sapwood.txt")
+```
+
+```{r loadMangrove}
+load(file = "../data/processed/files_mangrove.rda") # files_mangrove
+load(file = "../data/processed/K_mangrove.rda") # k_mangrove
+load(file = "../data/processed/twu_mangrove.rda") # twu_mangrove
+load(file = "../data/processed/sensor_mangrove.rda") # sensor_mangrove
+load(file = "../data/processed/sapflow_mangrove.rda") # sapflow_mangrove
+sapwood_mangrove = fread("../data/raw/mangrove_sapwood.txt")
+```
+
+# Task I {.tabset}
+## Task description
+
+> Objective  
+> The objective of this task is to test the general usability of the SFA and whether users with different levels of expertise are able to produce stable results. That means results between users are consistent and lie in the same order of magnitude.
+
+Please analyze the data sets ‘Spruce’ (27.-29.06.2005) and ‘Hornbeam’ (09.-12.02.2021). 
+Note, those data sets have different formats: A) temperature recordings or B) calculated temperature differences obtained with the HFD method. 
+The data sets contain days of sensor installation/ deinstallation which need to be removed.
+
+The main goal is to obtain daily tree water use of each tree. To evaluate where the greatest uncertainties appear in the analysis, please save intermediate results as specified in Table 1. Data set specifications are provided in Table 2 in the main manuscript and Figure 1 describes stem profiles, needle and thermometer positions. 
+
+## Data preparation
+
+- Combine data sets
+- Filter relevant days (see task description)
+- Exclude 0-estimates
+
+```{r twu_taks1}
+twu = bind_rows(twu_spruce %>%
+                    filter(doy %in% c(178:180)),
+                twu_hornbeam %>%
+                    filter(doy %in% c(40:43))) %>%
+    filter(Positive != 0) %>% 
+    gather(., balance, TWU, Positive, Negative)
+```
+
+The participant with ID 2 did not upload any final estimates of TWU.
+However, these could be calculated based on the intermediate results provided, namely the scaled sap flow rate.
+
+```{r twu_spruce_id2}
+# Missing TWU data of participant 2
+twu_2 = sapflow_hornbeam  %>%
+    filter(doy %in% c(40:43)) %>% 
+    filter(id == 2) 
+
+twu_2 = get.treeWaterUseByMethod(twu_2) %>% 
+    mutate(dataset = "hornbeam") %>% 
+    filter(Positive != 0) %>% 
+    gather(., balance, TWU, Positive, Negative)
+```
+
+- Add CVq (Quartile Coefficient of Variation) to dataset
+- $cvq = (q3 - q1) / (q3 + q1)$
+
+```{r twu_all}
+twu = twu %>%
+    bind_rows(twu_2) %>% 
+    filter(!is.na(TWU)) %>%
+    group_by(dataset, balance, Method, doy) %>%
+    mutate(
+        q1 = quantile(abs(TWU), 0.25),
+        med = median(abs(TWU)),
+        q3 = quantile(abs(TWU), 0.75),
+        iqr = q3 - q1,
+        lb = q1 - 1.5 * iqr,
+        ub = q3 + 1.5 * iqr,
+        pot_out = ifelse(abs(TWU) < lb | abs(TWU) > ub, T, F),
+        cv = sd(abs(TWU)) / mean(abs(TWU)),
+        cvq = (q3 - q1) / (q3 + q1)
+    ) %>% 
+    mutate(dataset = factor(dataset,
+                            levels = c("spruce", "hornbeam", "spruce_recov")))
+```
+
+### Recalculation of participant results, Hornbeam
+
+**Unify sapwood depth**
+
+- Set sapwood depth to 6 cm
+
+```{r}
+sapflow_hornbeam_cor = sapflow_hornbeam %>%
+    filter(doy %in% c(40:43)) %>% 
+    select(position:Cring, id) %>% 
+    mutate(swd = 6)
+
+sapflow_hornbeam_cor = get.sapFlowDensity(sapflow_hornbeam_cor)
+sapflow_hornbeam_cor = treeScaleSimple1(sapflow_hornbeam_cor)
+sapflow_hornbeam_cor = get.SWArea(sapflow_hornbeam_cor, swd = 6,
+                                  stemDiameter = 17, barkThickness = 0)
+sapflow_hornbeam_cor = treeScaleSimple2(sapflow_hornbeam_cor)
+sapflow_hornbeam_cor = treeScaleSimple3(sapflow_hornbeam_cor)
+twu_hornbeam_cor = get.treeWaterUseByMethod(sapflow_hornbeam_cor)
+
+twu_hornbeam_cor = twu_hornbeam_cor %>% 
+    group_by(doy, Method) %>% 
+    mutate(m = mean(Positive),
+           sd = sd(Positive),
+           q5 = quantile(Positive, 0.05),
+           q95 = quantile(Positive, 0.95),
+           out = ifelse(Positive < q95 | Positive > q5, 
+                        T, F)) 
+
+unify_swd = twu_hornbeam_cor %>% 
+    mutate(type = "Corrected") %>% 
+    bind_rows(twu_hornbeam %>% 
+                  filter(doy %in% c(40:43)) %>% 
+                  mutate(type = "Original",
+                         out = F)) %>% 
+    rename("TWU" = "Positive") %>% 
+    group_by(doy, Method, type) %>% 
+    reframe(cv = sd(TWU)/mean(TWU),
+           q1 = quantile(TWU, 0.25),
+           q3 = quantile(TWU, 0.75),
+           cvq = (q3 - q1) / (q3 + q1),
+           q8 = quantile(TWU, 0.8)) 
+```
+
+
+**Unify Ri**
+
+- Set sap wood depth to 6 cm
+
+```{r}
+sapflow_hornbeam_cor = sapflow_hornbeam %>%
+    filter(doy %in% c(40:43)) %>% 
+    filter(position > 2) %>% 
+    select(position:SFDsw, SWDarea, id) 
+
+rxy = get.rxy(stemDiameter = 17, barkThickness = 0)
+r1 = get.r1(rxy = rxy, spacer = 35, barkThickness = 0)
+depths = data.frame(position = c(1:8),
+                    depth = seq(r1, (r1 - 7), by = -1))
+
+sapflow_hornbeam_cor = merge(sapflow_hornbeam_cor, depths, by = "position")
+sapflow_hornbeam_cor = get.ringSize(sapflow_hornbeam_cor)
+
+sapflow_hornbeam_cor = treeScaleSimple1(sapflow_hornbeam_cor)
+sapflow_hornbeam_cor = treeScaleSimple2(sapflow_hornbeam_cor)
+sapflow_hornbeam_cor = treeScaleSimple3(sapflow_hornbeam_cor)
+twu_hornbeam_cor = get.treeWaterUseByMethod(sapflow_hornbeam_cor)
+
+twu_hornbeam_cor = twu_hornbeam_cor %>% 
+    group_by(doy, Method) %>% 
+    mutate(m = mean(Positive),
+           sd = sd(Positive),
+           q5 = quantile(Positive, 0.05),
+           q95 = quantile(Positive, 0.95),
+           out = ifelse(Positive < q95 | Positive > q5, 
+                        T, F)) 
+
+unify_ri = twu_hornbeam_cor %>% 
+    mutate(type = "Corrected") %>% 
+    bind_rows(twu_hornbeam %>% 
+                  filter(doy %in% c(40:43)) %>% 
+                  mutate(type = "Original",
+                         out = F)) %>% 
+    rename("TWU" = "Positive") %>% 
+    group_by(doy, Method, type) %>% 
+    reframe(cv = sd(TWU)/mean(TWU),
+           q1 = quantile(TWU, 0.25),
+           q3 = quantile(TWU, 0.75),
+           cvq = (q3 - q1) / (q3 + q1),
+           q8 = quantile(TWU, 0.8))
+```
+
+
+**Unify all but K**
+
+- Set sap wood depth to 6 cm
+
+```{r}
+sapflow_hornbeam_cor = sapflow_hornbeam %>%
+    filter(doy %in% c(40:43)) %>% 
+    filter(position > 2) %>% 
+    select(position:SFS, id) %>% 
+    mutate(swd = 6)
+
+rxy = get.rxy(stemDiameter = 17, barkThickness = 0)
+r1 = get.r1(rxy = rxy, spacer = 35, barkThickness = 0)
+depths = data.frame(position = c(1:8),
+                    depth = seq(r1, (r1 - 7), by = -1))
+sapflow_hornbeam_cor = merge(sapflow_hornbeam_cor, depths, by = "position")
+sapflow_hornbeam_cor = get.ringSize(sapflow_hornbeam_cor)
+
+sapflow_hornbeam_cor = get.SWArea(sapflow_hornbeam_cor, swd = 6,
+                                  stemDiameter = 17, barkThickness = 0)
+
+sapflow_hornbeam_cor = get.sapFlowDensity(sapflow_hornbeam_cor)
+
+sapflow_hornbeam_cor = treeScaleSimple1(sapflow_hornbeam_cor)
+sapflow_hornbeam_cor = treeScaleSimple2(sapflow_hornbeam_cor)
+sapflow_hornbeam_cor = treeScaleSimple3(sapflow_hornbeam_cor)
+twu_hornbeam_cor = get.treeWaterUseByMethod(sapflow_hornbeam_cor)
+
+twu_hornbeam_cor = twu_hornbeam_cor %>% 
+    group_by(doy, Method) %>% 
+    mutate(m = mean(Positive),
+           sd = sd(Positive),
+           q5 = quantile(Positive, 0.05),
+           q95 = quantile(Positive, 0.95),
+           out = ifelse(Positive < q95 | Positive > q5, 
+                        T, F)) 
+
+unify_swd_ri = twu_hornbeam_cor %>% 
+    mutate(type = "Corrected") %>% 
+    bind_rows(twu_hornbeam %>% 
+                  filter(doy %in% c(40:43)) %>% 
+                  mutate(type = "Original",
+                         out = F)) %>% 
+    rename("TWU" = "Positive") %>% 
+    group_by(doy, Method, type) %>% 
+    reframe(cv = sd(TWU)/mean(TWU),
+           q1 = quantile(TWU, 0.25),
+           q3 = quantile(TWU, 0.75),
+           cvq = (q3 - q1) / (q3 + q1),
+           q8 = quantile(TWU, 0.8)) 
+```
+
+**Unify K**
+
+- Set sap wood depth to 6 cm
+
+```{r}
+k_avg = sapflow_hornbeam %>% 
+    distinct(position, k) %>% 
+    group_by(position) %>% 
+    reframe(k = mean(k))
+
+sapflow_hornbeam_cor = sapflow_hornbeam %>%
+    filter(doy %in% c(40:43)) %>% 
+    filter(position > 2) %>% 
+    rename("k_original" = "k") %>% 
+    merge(., k_avg, by = "position") %>% 
+    mutate(swd = SFS/SFDsw) %>% 
+    select(position:Ztg, depth:Cring, SWDarea, swd, dataset, k, id)
+
+sapflow_hornbeam_cor = get.sapFlowDensity(sapflow_hornbeam_cor)
+
+sapflow_hornbeam_cor = treeScaleSimple1(sapflow_hornbeam_cor)
+sapflow_hornbeam_cor = treeScaleSimple2(sapflow_hornbeam_cor)
+sapflow_hornbeam_cor = treeScaleSimple3(sapflow_hornbeam_cor)
+twu_hornbeam_cor = get.treeWaterUseByMethod(sapflow_hornbeam_cor)
+
+twu_hornbeam_cor = twu_hornbeam_cor %>% 
+    group_by(doy, Method) %>% 
+    mutate(m = mean(Positive),
+           sd = sd(Positive),
+           q5 = quantile(Positive, 0.05),
+           q95 = quantile(Positive, 0.95),
+           out = ifelse(Positive < q95 | Positive > q5, 
+                        T, F)) 
+
+unify_k = twu_hornbeam_cor %>% 
+    mutate(type = "Corrected") %>% 
+    bind_rows(twu_hornbeam %>% 
+                  filter(doy %in% c(40:43)) %>% 
+                  mutate(type = "Original",
+                         out = F)) %>% 
+    rename("TWU" = "Positive") %>% 
+    group_by(doy, Method, type) %>% 
+    reframe(cv = sd(TWU)/mean(TWU),
+           q1 = quantile(TWU, 0.25),
+           q3 = quantile(TWU, 0.75),
+           cvq = (q3 - q1) / (q3 + q1),
+           q8 = quantile(TWU, 0.8))
+```
+
+```{r}
+all_unified = bind_rows(
+    unify_swd %>% 
+        mutate(unify = "swd"),
+    unify_ri %>% 
+        mutate(unify = "ri"),
+    unify_swd_ri %>% 
+        mutate(unify = "swd+ri"),
+    unify_k %>% 
+        mutate(unify = "k"),
+) %>% distinct(Method, type, doy, cvq, unify) 
+```
+
+
+## Results
+### Summary statistics
+#### Main, paragraph 1
+
+**Estimated TWU**
+
+```{r MeanSD}
+twu %>% 
+    filter(balance == "Positive") %>%
+    group_by(dataset, doy) %>% 
+    reframe(m = mean(TWU), s = sd(TWU)) %>% #View()
+    group_by(dataset) %>% 
+    reframe(mean(m), sd(m)) %>% 
+    mutate_if(is.numeric, round, 1) %>%
+    kbl() %>%
+    kable_paper("hover", full_width = F)
+```
+
+**Range of CVq, positive flow**
+
+```{r}
+twu %>% 
+    filter(balance == "Positive") %>%
+    group_by(dataset) %>% 
+    reframe(min = min(cvq),
+            max = max(cvq),
+            mean = mean(cvq)) %>%
+    mutate_at(vars(c(2, 3)), round, 2)  %>%
+    mutate_at(vars(4), round, 3)  %>%
+    kbl() %>%
+    kable_paper("hover", full_width = F)
+```
+
+**Range of CVq, negative flow**
+
+```{r}
+twu %>% 
+    filter(balance == "Negative") %>%
+    group_by(dataset) %>% 
+    reframe(min = min(cvq),
+            max = max(cvq),
+            mean = mean(cvq)) %>%
+    mutate_at(vars(c(2, 3)), round, 2)  %>%
+    mutate_at(vars(4), round, 3)  %>%
+    kbl() %>%
+    kable_paper("hover", full_width = F)
+```
+#### Main, paragraph 2
+
+**Variation in _K_**
+
+```{r}
+k_values = k_spruce %>%
+    mutate(dataset = "Spruce") %>%
+    bind_rows(
+        k_hornbeam %>%
+            mutate(dataset = "Hornbeam")
+    ) %>% 
+    filter(!is.na(k)) %>% 
+    group_by(dataset, position) %>% 
+    mutate(cv = sd(k)/mean(k),
+           q1 = quantile(k, 0.25),
+           q3 = quantile(k, 0.75),
+           cvq = (q3 - q1) / (q3 + q1))   %>% 
+    mutate(dataset = factor(dataset,
+                            levels = c("Spruce", "Hornbeam")))
+
+cvq = k_values %>% 
+    group_by(dataset, position) %>% 
+    reframe(cv = sd(k)/mean(k),
+           q1 = quantile(k, 0.25),
+           q3 = quantile(k, 0.75),
+           cvq = (q3 - q1) / (q3 + q1)) %>% 
+    group_by(dataset) %>% 
+    reframe(cvq = paste(round(mean(cvq), 2),
+                              " (", round(min(cvq), 3), " - ", 
+                       round(max(cvq), 3), ")", sep = ""))
+cvq %>%
+    kbl() %>%
+    kable_paper("hover", full_width = F)
+```
+
+
+#### Main, paragraph 3
+
+**Average difference between TWU obtained with all scaling methods**
+
+
+```{r MeanMethod}
+# Task 1
+# Paragraph 3
+twu %>% 
+    filter(balance == "Positive") %>%
+    group_by(dataset, doy, Method) %>% 
+    reframe(method_mean = mean(TWU)) %>% #View()
+    group_by(dataset, doy) %>% 
+    reframe(method_diff = max(method_mean) - min(method_mean), 
+            day_mean = mean(method_mean)) %>% #View()
+    group_by(dataset) %>% 
+    reframe(mean(method_diff/day_mean*100)) %>% 
+    mutate_if(is.numeric, round, 1) %>%
+    kbl() %>%
+    kable_paper("hover", full_width = F)
+```
+
+
+#### Main, paragraph 4
+
+**TWU cvq with corrected user inputs, by scaling method** 
+
+```{r}
+all_unified %>% 
+    group_by(Method, type, unify) %>%
+    reframe(mean_cvq = mean(cvq)) %>% 
+    mutate_if(is.numeric, round, 2) %>% 
+    spread(., unify, mean_cvq) %>% 
+    mutate(type = factor(type, levels = c("Original", "Corrected"))) %>% 
+    arrange(Method, type) %>%
+    kbl() %>%
+    kable_paper("hover", full_width = F)
+```
+
+### Figures
+#### Figure S2
+
+```{r warning=F, fig.height=4, message=F, fig.cap="SFS of one participant for hornbeam. Lines show SFS calculated is original K values and with 5% higher K values. Red line shows absolute diffrence between SFSs."}
+data = sapflow_hornbeam %>% filter(id == 1)
+data$y0 = 3600 * data$Dst * (data[, "k"] + data[, "dTsa"]) / 
+    data[, "dTas"] * data$Zax / data$Ztg
+data$y1 = 3600 * data$Dst * (data[, "k"]*1.05 + data[, "dTsa"]) / 
+    data[, "dTas"] * data$Zax / data$Ztg
+data$y2 = 3600 * data$Dst * (data[, "k"]*0.99 + data[, "dTsa"]) /
+    data[, "dTas"] * data$Zax / data$Ztg
+
+p1 = data %>%
+    filter(position == 5) %>% 
+    gather(., key, value, y0:y2) %>%
+    mutate(key = factor(key,
+                        levels = c("y1", "y2", "y0"),
+                        labels = c("+5%", "-1%", "0%"))) %>%
+    ggplot(., aes(x = datetime, y = value, col = factor(key))) +
+    geom_line() +
+    geom_hline(yintercept = 0) +
+    labs(y = labels[["SFS"]],
+         col = expression(paste("\u0394", italic("K"), "  "))) +
+    theme(axis.title.x = element_blank())
+
+p2 = data %>%
+    filter(position == 5) %>% 
+    filter(y0 < -0.0001 | y0 > 0.0001) %>% 
+    gather(., key, value, y1, y2) %>% 
+    mutate(key = factor(key,
+                        levels = c("y1", "y2"),
+                        labels = c("+5%", "-1%"))) %>%
+    mutate(d = (value - y0) / y0) %>% 
+    ggplot(., aes(x = y0, y = d, col = factor(key))) +
+    geom_point(size = .7) +
+    geom_hline(yintercept = 0) +
+    labs(y = "Relative difference (-)",
+         x = labels[["SFS"]],
+         col = expression(paste("\u0394", italic("K"), "  "))) 
+
+ggarrange(p1, p2, ncol = 2,
+          labels = c("(a)", "(b)"),
+          align = "hv",
+          common.legend = T,
+          legend = "bottom")
+
+```
+
+```{r eval=F}
+ggsave(filename = "../figs/fig_S2_task1_k_sensitivity.jpg",
+       width = 8, height = 3.5)
+```
+
+
+#### Figure 3
+
+```{r out.width="100%", fig.cap="Variation of daily TWU. (a) displays the quartile coefficient of variation (CVq) for each scaling method and dataset, indicating a higher degree of variation between participants depending on the selected scaling method. (b) shows the variation in the estimated daily TWU. Each data point represents the estimate of a participant, and the color indicates the selected scaling method."}
+p1 = twu %>%
+    filter(balance == "Positive") %>% 
+    distinct(dataset, doy, Method, cvq) %>%
+    ggplot(., aes(
+        x = factor(doy),
+        y = cvq
+    )) +
+    geom_col(
+        position = "dodge",
+        aes(fill = factor(Method)),
+        alpha = 0.5,
+        col = "black",
+    ) +
+    geom_col(
+        twu %>% filter(balance == "Positive") %>% 
+            group_by(dataset, Method) %>% 
+            reframe(cvq = mean(cvq)),
+        position = "dodge",
+        mapping = aes(fill = factor(Method), x = "All"),
+        alpha = 0.5,
+        col = "black",
+    ) +
+    scale_shape_manual(values = c(21, 23, 24)) +
+    labs(x = "Day of the year",
+         y = "CVq (-)",
+         fill = "Upscaling \nmethod",) +
+    facet_wrap( ~ dataset, scales = "free") +
+    theme(axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          panel.grid.minor = element_blank(),
+          text = element_text(size=14))
+
+p2 = twu %>%
+    filter(balance == "Positive") %>% 
+    ggplot(., aes(
+        x = factor(doy),
+        y = TWU
+    )) +
+    geom_point(
+        position = position_jitterdodge(),
+        aes(fill = factor(Method), shape = Method,
+            group = interaction(doy, Method)),
+        size = 3,
+        alpha = 0.5
+    ) +
+    geom_boxplot(fill = NA) +
+    geom_boxplot(
+        twu %>%  filter(balance == "Positive") %>% 
+            ungroup() %>% distinct(dataset, Method, TWU),
+        position = "dodge",
+        mapping = aes(x = "All"),
+        alpha = 0.5,
+        col = "black",
+    ) +
+    scale_shape_manual(values = c(21, 23, 24)) +
+    labs(
+        x = "Day of the year",
+        y = expression(Tree ~ water ~ use ~ (L ~ d ^ {
+            -1
+        })),
+        shape = "Upscaling \nmethod",
+        fill = "Upscaling \nmethod",
+    ) +
+    facet_wrap( ~ dataset, scales = "free") +
+    theme(text = element_text(size=14))
+
+ggarrange(p1, NULL, p2, ncol = 1,
+          heights = c(1.5, -0.35, 3),
+          labels = c("(a)", "", "(b)"),
+          align = "hv",
+          common.legend = T,
+          legend = "right")
+```
+
+```{r eval=F}
+ggsave(filename = "../figs/fig_3_task1_twu.jpg",
+       width = 9, height = 5)
+```
+
+
+#### Figure S3
+
+```{r warning=F, message=F, fig.cap="Quartile coefficients of variation (CVq) for recalculated hornbeam TWU. The recalculation was performed using the participants' data sets, but certain inputs were standardized across participants. To ‘unify’ inputs, Ks were set to the average per thermometer, sapwood depth (swd) was set to 6 cm, and distance between thermometers and trunk center (Ri) was set to the correct values. Orange bars represent CVq of participant data. Columns and rows show results for scaling methods and day of the year, respectively."}
+corrected = all_unified %>%
+    filter(type == "Corrected") 
+
+orignal = all_unified %>% 
+    filter(type == "Original") %>% 
+    distinct(Method, type, doy, cvq) %>% 
+    mutate(unify = "None")
+
+corrected %>% 
+    bind_rows(., orignal) %>% 
+    mutate(unify = factor(unify,
+                          levels = c("k", "swd", "ri", "swd+ri", "None"),
+                          labels = c("K", "swd", "Ri", "swd & \nRi",
+                                     "None"))) %>% 
+    ggplot(., aes(x = unify, y = cvq, fill = type)) +
+    geom_col(col = "black") +
+    facet_grid(doy~Method, scales = "fixed") +
+    labs(x = "Unified participant parameters",
+         y = "CVq",
+         fill = "Date set") +
+    theme(legend.position = "bottom")
+```
+
+```{r eval=F}
+ggsave("../figs/fig_S3_task1_hornbeam_correct.jpg",
+       width = 8, height = 4.5)
+```
+
+# Task II
+## Task description
+
+> Objective
+> The objective of this task is to test whether results obtained with the SFA can be reproduced based on a short description of the analysis as it can be > found in the material and methods section of an application publication.
+
+
+Please try to reproduce the analysis of the data set ‘Mangrove’ following the short description provided below. Provide intermediate results as specified in Table 1.
+
+*Description: “HFD sensors were installed in an Avicennia germinans stem with a DBH of 25.2 cm; probes were installed at 1.3 m height. Sap flow was calculated for four subsequent days with complete measurement, starting at 28.04.2022, using the SapFlowAnalyzer. K was estimated using only data recorded between 10pm and 11am and both asymmetrical and symmetrical temperature differences were used for no-flow regression. As no core samples were taken, sapwood depth was assumed to equal active needle length (bark was removed below sensor, protrusion was 11 mm). Sap flow density was scaled to tree water use per day using the circumference of each circular ring.”*
+
+## Data preparation
+
+- Select only user results obtained with scaling method 3
+- calculate CVq
+
+```{r}
+twu_mangrove_all = twu_mangrove
+twu_mangrove = twu_mangrove %>%
+    filter(Method == "Method 3") %>% 
+    rename("TWU" = "Positive") 
+
+twu_text = twu_mangrove %>% 
+    group_by(doy) %>% 
+    reframe(
+        cv = sd(TWU) / mean(TWU),
+        q1 = quantile(TWU, 0.25),
+        q3 = quantile(TWU, 0.75),
+        cvq = (q3 - q1) / (q3 + q1)
+    )
+
+twu_mangrove = twu_mangrove %>%
+    merge(., k_mangrove %>%
+              distinct(id, method),
+          by = "id") %>%
+    merge(., sapwood_mangrove,
+          by = "id") %>%
+    merge(., sensor_mangrove %>%
+               group_by(id) %>%
+               reframe(r1 = max(R)),
+           by = "id")
+```
+
+## Results
+### Summary statistics
+#### Main, paragraph 1
+
+**Correctness of app input**
+
+```{r}
+correct_all = data.frame(Parameter = c("dbh (cm)", "bark (cm)", "spacer (mm)",
+                                       "swd (cm)", "Router (cm)", "Rinner (cm)"),
+                         Mangrove = c(25.2, 0, 11, 8, 11.7, 4.7))
+dbh = sapwood_mangrove %>%
+    mutate(n = n()) %>% 
+    filter(dbh == correct_all$Mangrove[1][[1]]) %>% 
+    distinct(p = round(n()/n*100, 1),
+             id = paste0(id, collapse = ", "))
+
+bark = sapwood_mangrove %>%
+    mutate(n = n()) %>% 
+    filter(bark == correct_all$Mangrove[2][[1]]) %>% 
+    distinct(p = round(n()/n*100, 1),
+             id = paste0(id, collapse = ", "))
+
+spacer = sapwood_mangrove %>%
+    mutate(n = n()) %>% 
+    filter(portrusion == correct_all$Mangrove[3][[1]]) %>% 
+    distinct(p = round(n()/n*100, 1),
+             id = paste0(id, collapse = ", "))
+
+swd = sapwood_mangrove %>%
+    mutate(n = n()) %>% 
+    filter(swd >= (correct_all$Mangrove[4][[1]] - 0.5) &
+               swd <= (correct_all$Mangrove[4][[1]] + 0.5)) %>% 
+    distinct(p = round(n()/n*100, 1),
+             id = paste0(id, collapse = ", "))
+
+ro = sensor_mangrove %>%
+    group_by(id) %>%
+    reframe(outer = max(R), inner = min(R)) %>% 
+    ungroup() %>% 
+    mutate(n = n()) %>% 
+    filter(outer == correct_all$Mangrove[5][[1]]) %>% 
+    distinct(p = round(n()/n*100, 1),
+             id = paste0(id, collapse = ", "))
+
+ri = sensor_mangrove %>%
+    group_by(id) %>%
+    reframe(outer = max(R), inner = min(R)) %>% 
+    ungroup() %>% 
+    mutate(n = n()) %>% 
+    filter(inner == correct_all$Mangrove[6][[1]]) %>% 
+    distinct(p = round(n()/n*100, 1),
+             id = paste0(id, collapse = ", "))
+
+correct_all = correct_all %>% 
+    mutate('Participants %' = c(dbh[[1]], bark[[1]], spacer[[1]],
+                            swd[[1]], ro[[1]], ri[[1]]),
+            IDs = c(dbh[[2]], bark[[2]], spacer[[2]],
+                            swd[[2]], ro[[2]], ri[[2]])) %>% 
+    rename("Correct input" = "Mangrove")
+```
+
+```{r}
+correct_all  %>% select(-IDs) %>% 
+    kbl(caption = "Overview wood and sensor properties listed in the given paragraph and proportion of participants to provided the correct input to the app.") %>%
+    kable_paper("hover", full_width = F)
+```
+
+**TWU estimates** 
+
+```{r}
+twu_mangrove %>% 
+    # filter(id != 13) %>%
+    group_by(doy) %>% 
+    reframe(m = mean(TWU), sd(TWU)) %>% 
+    ungroup() %>% 
+    reframe(TWU = mean(m), sd = sd(m)) %>% 
+    mutate_at(1, round, 1) %>% 
+    mutate_at(2, round, 2) %>%
+    kbl() %>%
+    kable_paper("hover", full_width = F)
+```
+
+
+**Methods for _K_ estimation**
+
+```{r eval=F}
+# Correct method to estmate K
+# Main: Results > Task 2 > Paragraph 1
+d = k_mangrove %>% 
+    mutate(useRef = ifelse(method == "regression, dTas-dTs-a, time: 22 - 11", 
+                           1, 0),
+           useRef = ifelse(is.na(useRef), 0, useRef),
+           useREG = ifelse(str_detect(method, "^reg"), 1, 0),
+           useREG = ifelse(is.na(useREG), 0, useREG)) %>%
+    reframe(n_Ref = sum(useRef) / 8,
+            # p_Ref = sum(useRef) / n() * 100,
+            n_REG = sum(useREG) / 8,
+            # p_REG = sum(useREG) / n() * 100
+            )
+colnames(d) = c("Regression with correct filters", "Regression")
+d %>%
+    kbl() %>%
+    kable_paper("hover", full_width = F)
+```
+
+**Total deviation in TWU**
+
+```{r warning=F, message=F}
+# Participant with all inputs correct (except swd): e.g. 1,4,5,8,10,11
+twu = twu_mangrove %>%
+    merge(.,
+          twu_mangrove %>%
+              filter(id == 10) %>%
+              rename("X" = "TWU") %>%
+              select(doy, X),
+          by = "doy") %>% 
+    mutate(d = (TWU - X) / X * 100) %>% 
+    select(doy, id, TWU, X, d)
+
+p5 = twu %>%
+    group_by(doy) %>% 
+    mutate(n = n()) %>% 
+    filter(abs(d) <= 5) %>% 
+    group_by(doy) %>% 
+    reframe(n5 = n(),
+            p5 = n()/n*100,
+            IDs = paste0(id, collapse = ", ")) %>% 
+    distinct(doy, n5, p5, IDs) %>% 
+    distinct(n5)
+
+p1 = twu %>%
+    group_by(doy) %>% 
+    mutate(n = n()) %>% 
+    filter(abs(d) <= 1) %>% 
+    group_by(doy) %>% 
+    reframe(n1 = n(),
+            p1 = n()/n*100,
+            IDs = paste0(id, collapse = ", ")) %>% 
+    distinct(doy, n1, p1, IDs) %>% 
+    distinct(n1)
+
+bind_cols(p5, p1) %>% 
+    `colnames<-`(c("#5% deviation", "#1% deviation")) %>%
+    kbl() %>%
+    kable_paper("hover", full_width = F)
+```
+
+
+### Figures
+#### Figure 4
+
+```{r message=F, warning=F, fig.height=4, fig.cap="Variation in TWU estimated for task 2. Colors indicate the method used to estimate K, and pink diamonds indicate the requested method. MED = median, REG = regression."}
+twu_mangrove %>%
+    filter(id != 13) %>% rowwise() %>% 
+    mutate(req = ifelse(method == "regression, dTas-dTs-a, time: 22 - 11",
+                        23, 21),
+           method = ifelse(method == "no-flow", "MED", method),
+           method = paste("no-flow", method, sep = " "),
+           method = gsub("regression", "REG", method)) %>% 
+    ggplot(., aes(
+        x = factor(doy),
+        y = TWU
+    )) +
+    geom_point(
+        position = position_jitterdodge(),
+        aes(fill = factor(method), 
+            shape = factor(req),
+            group = interaction(Method, doy)),
+        size = 3,
+        alpha = 0.5
+    ) +
+    geom_text(x = factor(118), y = 12.5, col = "black",
+              label = paste("~ CVq: ", round(mean(twu_text$cvq), 3))) +
+    geom_boxplot(fill = NA) +
+    scale_shape_manual(values = c(21, 23)) +
+    guides(fill=guide_legend(override.aes=list(shape=c(21, 21, 21, 23, 21))),
+           shape = F) +
+    labs(
+        x = "Day of the year",
+        y = expression(Tree ~ water ~ use ~ (L ~ d ^ {
+            -1
+        })),
+        fill = "K estimation method"
+    ) +
+    theme(legend.position = "right",
+          legend.direction = "vertical")
+
+```
+
+```{r eval=F}
+ggsave(filename = "../figs/fig_4_task2_TWU.jpg",
+       dpi = 350,
+       width = 7, height = 3.)
+```
+
+#### Figure S4
+
+
+```{r warning=F, message=F, fig.cap="(a) Quartile coefficients of variation (CVq) for K estimates. (b) Correlation between sap flow per section (SFS) and the corresponding CVq. Numbers indicate median CVq values for each dataset and parameter, respectively."}
+k_values = bind_rows(
+    k_hornbeam %>% 
+        filter(position %in% c(3:8)) %>% 
+        mutate(dataset = "hornbeam"),
+    k_spruce %>% 
+        filter(position %in% c(1:5)) %>% 
+        mutate(dataset = "spruce"),
+    k_mangrove %>% 
+        mutate(dataset = "mangrove")
+    ) %>% 
+    mutate(dataset = factor(dataset,
+                            levels = c("spruce", "hornbeam", 
+                                       "mangrove"))) %>% 
+    filter(complete.cases(k)) %>%
+    group_by(dataset, position) %>% 
+    reframe(
+        m = mean(k),
+        min = min(k),
+        max = max(k),
+        q1 = quantile(k, 0.25),
+        q3 = quantile(k, 0.75),
+        cvq = (q3 - q1) / (q3 + q1)  
+    )
+
+sapflow = bind_rows(
+    sapflow_hornbeam %>% 
+        filter(doy %in% c(40:43)) %>% 
+        mutate(dataset = "hornbeam"),
+    sapflow_spruce %>% 
+        filter(doy %in% c(178:180)) %>% 
+        mutate(dataset = "spruce"),
+    sapflow_mangrove %>% 
+        mutate(dataset = "mangrove")
+    )
+
+sapflow_cvq = sapflow %>% 
+    filter(SFS >= 0) %>%
+    filter(complete.cases(SFS)) %>%
+    group_by(dataset, position, datetime) %>% 
+    reframe(
+        m = mean(SFS),
+        min = min(SFS),
+        max = max(SFS),
+        cv = sd(SFS)/mean(SFS),
+        q1 = quantile(SFS, 0.25),
+        q3 = quantile(SFS, 0.75),
+        cvq = (q3 - q1) / (q3 + q1)  
+    )
+
+cvq_k = k_values %>% 
+    group_by(dataset) %>% 
+    reframe(cvq = median(cvq))
+
+p1 = k_values %>% 
+    ggplot(., aes(x = factor(position), y = cvq, fill = position)) +
+    geom_col() +
+    scale_fill_viridis_c() +
+    geom_label(cvq_k,
+               fill = "white",
+               col = "black",
+               mapping = aes(x = 3, y = 0.015,
+                             label = paste("~", round(cvq, 3)))) +
+    facet_wrap(~dataset, scales = "free_x") +
+    labs(x = "Thermometer",
+         fill = "Thermometer",
+         y =" CVq (k)") +
+    theme(axis.title.x = element_blank())
+
+cvq_sf = sapflow_cvq %>% 
+    group_by(dataset) %>% 
+    reframe(y = 0.75*max(cvq),
+            cvq = median(cvq),
+            m = 0.75*max(m))
+
+p2 = sapflow_cvq %>% 
+    mutate(dataset = factor(dataset,
+                            levels = c("spruce", "hornbeam", 
+                                       "mangrove"))) %>% 
+    ggplot(., aes(x = m, y = cvq, col = position)) +
+    geom_point(size = 0.5, pch = ".") +
+    geom_label(cvq_sf,
+               fill = "white",
+               col = "black",
+               mapping = aes(y = y,
+                             label = paste("~", round(cvq, 3)))) +
+    scale_color_viridis_c() +
+    facet_wrap(~dataset, scales = "free") +
+    labs(x = labels[["SFS"]],
+         y = "CVq (SFS)",
+         col = "Thermometer")
+
+ggarrange(p1, p2, ncol = 1,
+          heights = c(1, 1.3),
+          labels = c("(a)", "(b)"),
+          align = "hv",
+          common.legend = T,
+          legend = "bottom")
+```
+
+```{r eval=F}
+ggsave(filename = "../figs/fig_S4_SFS_K_cvq.jpg",
+       dpi = 350,
+       width = 8, height = 5.5)
+```
+
+
+# Background of participants
+## K estimation
+
+```{r}
+users = fread("../data/user_background.csv")
+```
+
+```{r out.width="60%", fig.cap="Information about the participant's previous experience of using R/RStudio, the HFD method and the SFA."}
+users_long = users %>% 
+    gather(., key, value, SFA:R) %>%
+    mutate(value = factor(value,
+                          levels = c("yes", "no"))) 
+users_p = users_long %>% 
+    group_by(key) %>% 
+    mutate(n = n()) %>% 
+    group_by(key, value) %>% 
+    reframe(y = n(),
+            p = round(y/n*100, 1), n) %>% 
+    distinct(key, value, p, y) %>% 
+    mutate(key = factor(key,
+                        levels = c("R", "HFD", "SFA")))
+
+users_long %>% 
+    ggplot(., aes(x = key, fill = value)) +
+    geom_bar(position = "dodge") +
+    geom_text(users_p,
+              position = position_dodge(width=1),
+              mapping = aes(label = paste(p, "%"), y = y+1)) +
+    labs(fill = "Experience?",
+         y = "count") +
+    theme(axis.title.x = element_blank())
+```
+
+```{r out.width="100%", fig.cap="Difference in K estimates among experienced and inexperienced users. * and ns indicate significant and non-significant differences according to the Wilcoxon rank sum test."}
+bind_rows(
+    k_hornbeam %>% 
+        filter(position %in% c(3:8)) %>% 
+        mutate(dataset = "hornbeam"),
+    k_spruce %>% 
+        filter(position %in% c(1:5)) %>% 
+        mutate(dataset = "spruce"),
+    k_mangrove %>% 
+        mutate(dataset = "mangrove")
+    ) %>% 
+    mutate(dataset = factor(dataset,
+                            levels = c("spruce", "hornbeam", "mangrove"))) %>% 
+    left_join(., users %>% rename("id" = "ID"), by = "id") %>% 
+    gather(., key, value, SFA:R) %>% 
+    mutate(value = factor(value,
+                          levels = c("yes", "no")),
+           key = factor(key,
+                        levels = c("R", "HFD", "SFA"))) %>%
+    filter(complete.cases(k)) %>% 
+    ggplot(., aes(x = factor(position), y = k, col = value)) +
+    geom_boxplot() +
+    stat_compare_means(method = "wilcox.test",
+                       label = "p.signif",
+                       label.y.npc = 0.9,
+                       show.legend = F) +
+    facet_grid(dataset~key, scales = "free") +
+    labs(y = "K",
+         x = labels["position"],
+         col = "Experience") +
+    theme(legend.position = "bottom")
+```
+
+```{r eval=F}
+ggsave("../figs/experience_k.jpg",
+       width = 8, height = 5)
+```
+
+
+## TWU
+
+```{r out.width="100%", fig.cap="Difference in swd estimates among experienced and inexperienced users. * and ns indicate significant and non-significant differences according to the Wilcoxon rank sum test. The sapwood depth estimates of the participant with no experience in the HFD method were missing"}
+twu_hornbeam = twu_hornbeam %>%
+    merge(., sapwood_hornbeam,
+          by = "id") 
+
+twu_spruce = twu_spruce %>%
+    merge(., sapwood_spruce,
+          by = "id") 
+
+twu = bind_rows(
+    twu_mangrove %>% mutate(dataset = "mangrove"),
+    twu_hornbeam %>% mutate(dataset = "hornbeam", TWU = Positive) %>% 
+        filter(doy %in% c(40:43)),
+    twu_spruce %>% mutate(dataset = "spruce", TWU = Positive) %>% 
+        filter(doy %in% c(178:180))
+) %>% 
+    mutate(dataset = factor(dataset,
+                            levels = c("spruce", "hornbeam", "mangrove"))) %>% 
+    left_join(., users %>% rename("id" = "ID"), by = "id")
+```
+
+```{r}
+twu %>% 
+    gather(., key, value, SFA:R) %>% 
+    mutate(value = factor(value,
+                          levels = c("yes", "no")),
+           key = factor(key,
+                        levels = c("R", "HFD", "SFA"))) %>%
+    group_by(dataset) %>% 
+    mutate(doy_ranked = doy - min(doy) + 1) %>% 
+    ggplot(., aes(x = factor(doy_ranked), y = TWU, col = value)) +
+    geom_boxplot() +
+    stat_compare_means(method = "wilcox.test",
+                       label = "p.signif",
+                       label.y.npc = 0.9,
+                       show.legend = F) +
+    facet_grid(dataset~key, scales = "free") +
+    labs(y = labels[["TWU"]],
+         x = labels[["doy"]],
+         col = "Experience") +
+    theme(legend.position = "bottom")
+```
+
+```{r eval=F}
+ggsave("../figs/experience_twu.jpg",
+       width = 8, height = 5)
+```
+
+## Sapwood depth
+
+```{r out.width="100%", fig.cap="Difference in K estimates among experienced and inexperienced users. * and ns indicate significant and non-significant differences according to the Wilcoxon rank sum test."}
+twu %>% 
+    filter(swd != 0) %>% 
+    gather(., key, value, SFA:R) %>% 
+    mutate(value = factor(value,
+                          levels = c("yes", "no")),
+           key = factor(key,
+                        levels = c("R", "HFD", "SFA"))) %>%
+    # filter(complete.cases(TWU)) %>% View()
+    group_by(dataset) %>% 
+    mutate(doy_ranked = doy - min(doy) + 1) %>% 
+    ggplot(., aes(x = factor(doy_ranked), y = swd, col = value)) +
+    geom_boxplot() +
+    stat_compare_means(method = "wilcox.test",
+                       label = "p.signif",
+                       label.y.npc = 0.9,
+                       show.legend = F) +
+    facet_grid(dataset~key, scales = "free") +
+    labs(y = "Sapwood depth",
+         x = labels[["doy"]],
+         col = "Experience") +
+    theme(legend.position = "bottom")
+```
+
+
+```{r eval=F}
+ggsave("../figs/experience_swd.jpg",
+       width = 8, height = 5)
+```
+
+
+
+
